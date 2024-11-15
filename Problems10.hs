@@ -108,7 +108,10 @@ subst x m (Var y)
   | otherwise = Var y
 subst x m (Lam y n) = Lam y (substUnder x m y n)
 subst x m (App n1 n2) = App (subst x m n1) (subst x m n2)
-subst x m n = undefined
+subst x m (Store n) = Store (subst x m n)
+subst x m Recall = Recall
+subst x m (Throw n) = Throw (subst x m n)
+subst x m (Catch n1 y n2) = Catch (subst x m n1) y (substUnder x m y n2)
 
 {-------------------------------------------------------------------------------
 
@@ -201,8 +204,94 @@ bubble; this won't *just* be `Throw` and `Catch.
 
 -------------------------------------------------------------------------------}
 
+isThrow :: Expr -> Bool
+isThrow (Throw _) = True
+isThrow _ = False
+
 smallStep :: (Expr, Expr) -> Maybe (Expr, Expr)
-smallStep = undefined
+smallStep (e, acc) = case e of
+    Const _ -> Nothing
+    Var _ -> Nothing
+    Lam _ _ -> Nothing
+
+    Plus e1 e2
+        | not (isValue e1) ->
+            case smallStep (e1, acc) of
+                Just (e1', acc') -> Just (Plus e1' e2, acc')
+                Nothing ->
+                    if isThrow e1 then Just (e1, acc)
+                    else Nothing
+        | not (isValue e2) ->
+            case smallStep (e2, acc) of
+                Just (e2', acc') -> Just (Plus e1 e2', acc')
+                Nothing ->
+                    if isThrow e2 then Just (e2, acc)
+                    else Nothing
+        | otherwise ->
+            case (e1, e2) of
+                (Const i1, Const i2) -> Just (Const (i1 + i2), acc)
+                _ -> error "Addition of non-integer values"
+
+    App e1 e2
+        | not (isValue e1) ->
+            case smallStep (e1, acc) of
+                Just (e1', acc') -> Just (App e1' e2, acc')
+                Nothing ->
+                    if isThrow e1 then Just (e1, acc)
+                    else Nothing
+        | not (isValue e2) ->
+            case smallStep (e2, acc) of
+                Just (e2', acc') -> Just (App e1 e2', acc')
+                Nothing ->
+                    if isThrow e2 then Just (e2, acc)
+                    else Nothing
+        | otherwise ->
+            case e1 of
+                Lam x e3 -> Just (subst x e2 e3, acc)
+                _ -> error "Application of non-function"
+
+    Store e1
+        | not (isValue e1) ->
+            case smallStep (e1, acc) of
+                Just (e1', acc') -> Just (Store e1', acc')
+                Nothing ->
+                    if isThrow e1 then Just (e1, acc)
+                    else Nothing
+        | isThrow e1 ->
+            Just (e1, acc)  -- Do not update accumulator
+        | otherwise ->
+            Just (e1, e1)  -- Update the accumulator to e1
+
+    Recall ->
+        Just (acc, acc)
+
+    Throw (Throw e1) ->
+        Just (Throw e1, acc)
+    Throw e1
+        | not (isValue e1) ->
+            case smallStep (e1, acc) of
+                Just (e1', acc') -> Just (Throw e1', acc')
+                Nothing -> Nothing
+        | otherwise ->
+            Nothing  -- Cannot step further
+
+    Catch e1 y e2
+        | not (isValue e1) && not (isThrow e1) ->
+            case smallStep (e1, acc) of
+                Just (e1', acc') -> Just (Catch e1' y e2, acc')
+                Nothing ->
+                    if isThrow e1 then Just (e1, acc)
+                    else Nothing
+        | isValue e1 ->
+            Just (e1, acc)  -- e1 evaluated to a value
+        | isThrow e1 ->
+            case e1 of
+                Throw w -> Just (subst y w e2, acc)
+                _ -> error "Unexpected pattern in Catch"
+        | otherwise ->
+            error "Unhandled case in Catch"
+
+
 
 steps :: (Expr, Expr) -> [(Expr, Expr)]
 steps s = case smallStep s of
